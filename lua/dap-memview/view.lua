@@ -48,6 +48,9 @@ local function ensure_buf()
 
   local km = config.options.keymaps
   local function map(lhs, fn, desc)
+    if type(lhs) ~= 'string' or lhs == '' then
+      return -- keymap disabled via `false`
+    end
     vim.keymap.set('n', lhs, fn, { buffer = buf, nowait = true, desc = 'dap-memview: ' .. desc })
   end
   map(km.refresh, function()
@@ -95,9 +98,20 @@ local function show(data, address_str)
   local opts = config.options
   local base_addr = tonumber(address_str) or 0
   local km = opts.keymaps
+  local hints = {}
+  local function hint(lhs, label)
+    if type(lhs) == 'string' and lhs ~= '' then
+      hints[#hints + 1] = ('[%s] %s'):format(lhs, label)
+    end
+  end
+  hint(km.refresh, 'refresh')
+  hint(km.page_prev, 'page back')
+  hint(km.page_next, 'page fwd')
+  hint(km.goto_expr, 'goto expr')
+  hint(km.close, 'quit')
   local header = {
     ('%s  @ %s  offset %+d  (%d bytes)'):format(state.expr or '?', address_str or '?', state.offset, #data),
-    ('[%s]efresh  [%s]/[%s] page  [%s]oto expr  [%s]uit'):format(km.refresh, km.page_prev, km.page_next, km.goto_expr, km.close),
+    table.concat(hints, '  '),
   }
   local lines = render.format(data, base_addr, opts.bytes_per_line)
 

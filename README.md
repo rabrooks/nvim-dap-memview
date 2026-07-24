@@ -1,93 +1,290 @@
 # nvim-dap-memview
 
-A memory viewer (live hex dump) for [nvim-dap](https://github.com/mfussenegger/nvim-dap).
+A memory viewer for [nvim-dap](https://github.com/mfussenegger/nvim-dap) — the
+missing "memory panel" from full debugger UIs, as a live hex dump inside Neovim.
 
-Inspect raw memory of the process you're debugging, refreshed on every stop, with
-bytes that changed since the last stop highlighted — the memory panel that
-LLDB/GDB users miss in the nvim-dap ecosystem
-([mfussenegger/nvim-dap#701](https://github.com/mfussenegger/nvim-dap/discussions/701)).
+<!-- TODO: record a short GIF of stepping through examples/demo.c with the
+     changed-byte highlights, and embed it here. -->
 
-Adapter-agnostic by construction: it speaks only DAP (`evaluate` +
-`readMemory`), so it works with any adapter that advertises
-`supportsReadMemoryRequest` — codelldb, lldb-dap, cppdbg, `gdb -i dap` — and
-therefore with C, C++, Rust, Zig, or anything else those adapters debug.
+```
+buf  @ 0x16FDFE3F8  offset +0  (256 bytes)
+[r] refresh  [[] page back  []] page fwd  [g] goto expr  [q] quit
+00016fdfe3f8  77 61 74 63 68 20 74 68  69 73 20 62 75 66 66 65  |watch this buffe|
+00016fdfe408  72 20 6d 75 74 61 74 65  00 00 00 00 00 00 00 00  |r mutate........|
+00016fdfe418  61 62 63 64 65 66 00 00  00 00 00 00 00 00 00 00  |abcdef..........|
+```
+
+Stopped at a breakpoint, run `:DapMemView buf` — then step, and watch the bytes
+your program writes light up.
+
+## Features
+
+- **Live hex dump** of any address the debuggee can see: local variables,
+  arrays, pointers, arbitrary expressions, or raw `0x...` addresses
+- **Auto-refresh on every stop** (step, breakpoint) with **changed-byte
+  highlighting** — see exactly what the last step mutated
+- **Paging** forward/backward through memory from the anchor address
+- **Adapter-agnostic**: speaks only DAP (`evaluate` + `readMemory`), with a
+  resolver that handles adapters that don't populate `memoryReference`
+  (looking at you, codelldb)
+- Small, dependency-free (nvim-dap only), unit + integration tested
 
 ## Requirements
 
-- Neovim >= 0.10 (uses `vim.base64`)
+- Neovim **>= 0.10**
 - [nvim-dap](https://github.com/mfussenegger/nvim-dap)
-- A debug adapter with `readMemory` support (codelldb recommended)
+- A debug adapter that supports the DAP `readMemory` request:
 
-## Install (lazy.nvim)
+| Adapter | Languages | readMemory |
+|---|---|---|
+| [codelldb](https://github.com/vadimcn/codelldb) | C, C++, Rust, Zig | ✅ |
+| [lldb-dap](https://lldb.llvm.org/resources/lldbdap.html) (LLVM ≥ 19) | C, C++, Rust | ✅ |
+| [cpptools / cppdbg](https://github.com/microsoft/vscode-cpptools) | C, C++ | ✅ |
+| `gdb -i dap` (GDB ≥ 14) | C, C++, Rust, Go | ✅ |
+
+Run `:checkhealth dap-memview` with a session active to confirm your adapter
+advertises `supportsReadMemoryRequest`.
+
+## Installation
+
+### [lazy.nvim](https://github.com/folke/lazy.nvim)
 
 ```lua
 {
   'rabrooks/nvim-dap-memview',
   dependencies = { 'mfussenegger/nvim-dap' },
+  cmd = { 'DapMemView', 'DapMemViewClose' },
+  keys = {
+    {
+      '<leader>dm',
+      function()
+        require('dap-memview').open(vim.fn.expand '<cexpr>')
+      end,
+      desc = 'Debug: Memory view (expression under cursor)',
+    },
+    {
+      '<leader>dM',
+      function()
+        vim.ui.input({ prompt = 'Memory expression: ' }, function(input)
+          if input and input ~= '' then
+            require('dap-memview').open(input)
+          end
+        end)
+      end,
+      desc = 'Debug: Memory view (prompt)',
+    },
+  },
   opts = {},
 }
 ```
 
-## Usage
-
-With a debug session stopped at a breakpoint:
-
-| Command | Action |
-|---|---|
-| `:DapMemView <expr>` | View memory at an expression (`&buf`, `argv`, `0x7ffe...`) |
-| `:DapMemView` | View memory of the expression under the cursor |
-| `:DapMemViewClose` | Close the view |
-
-Inside the view: `r` refresh, `]`/`[` page forward/back, `g` jump to a new
-expression, `q` close. The view auto-refreshes on every stop; changed bytes are
-highlighted (`DapMemviewChanged`, links to `DiffText`).
-
-For a non-pointer variable, view its storage with `&var` — pointers and arrays
-resolve directly.
-
-## Configuration (defaults)
+### [mini.deps](https://github.com/echasnovski/mini.deps)
 
 ```lua
-require('dap-memview').setup {
-  bytes_per_line = 16,
-  count = 256,          -- bytes per page
-  auto_refresh = true,  -- re-read + diff on every stop
-  window = { position = 'botright', height = 18 },
-  keymaps = { refresh = 'r', close = 'q', page_next = ']', page_prev = '[', goto_expr = 'g' },
+MiniDeps.add {
+  source = 'rabrooks/nvim-dap-memview',
+  depends = { 'mfussenegger/nvim-dap' },
+}
+require('dap-memview').setup {}
+```
+
+### [packer.nvim](https://github.com/wbthomason/packer.nvim)
+
+```lua
+use {
+  'rabrooks/nvim-dap-memview',
+  requires = { 'mfussenegger/nvim-dap' },
+  config = function()
+    require('dap-memview').setup {}
+  end,
 }
 ```
 
-## Try it
+### [vim-plug](https://github.com/junegunn/vim-plug)
 
-```sh
-cd examples && clang -g -O0 -o demo demo.c
+```vim
+Plug 'mfussenegger/nvim-dap'
+Plug 'rabrooks/nvim-dap-memview'
 ```
 
-Open `demo.c` in nvim, set a breakpoint in the loop, launch a codelldb session,
-then `:DapMemView buf` and step — watch the highlighted bytes march across the
-buffer.
+```lua
+-- after plug#end()
+require('dap-memview').setup {}
+```
 
-## Status / roadmap
+### Native `vim.pack` (Neovim 0.12+)
 
-Proof of concept — read-only. Planned:
+```lua
+vim.pack.add {
+  'https://github.com/mfussenegger/nvim-dap',
+  'https://github.com/rabrooks/nvim-dap-memview',
+}
+require('dap-memview').setup {}
+```
+
+> [!NOTE]
+> `setup()` is optional — it runs automatically with defaults on first use.
+> Call it only to change configuration.
+
+## Quickstart
+
+1. Start a debug session and stop at a breakpoint (see the
+   [nvim-dap docs](https://github.com/mfussenegger/nvim-dap/wiki/Debug-Adapter-installation)
+   for adapter setup).
+2. `:DapMemView buf` — or put your cursor on a variable and run `:DapMemView`
+   with no argument.
+3. Step (`require('dap').step_over()`). The view refreshes and highlights every
+   byte that changed.
+
+Want a sandbox? This repo ships one:
+
+```sh
+git clone https://github.com/rabrooks/nvim-dap-memview
+cd nvim-dap-memview/examples
+clang -g -O0 -o demo demo.c   # or gcc
+nvim demo.c
+```
+
+Set a breakpoint inside the loop, launch a codelldb session on `./demo`, then
+`:DapMemView buf` and step — the letters the loop writes march across the
+ASCII column with each byte highlighted as it changes.
+
+## Commands
+
+| Command | Action |
+|---|---|
+| `:DapMemView {expr}` | Open the memory view for an expression: a variable (`buf`), address-of (`&i`), pointer (`argv`), or raw address (`0x7ffee4c0`) |
+| `:DapMemView` | Same, using the expression under the cursor (`<cexpr>`) |
+| `:DapMemViewClose` | Close the memory view window |
+
+## Keybindings
+
+Inside the memory view (buffer-local, configurable):
+
+| Key | Action |
+|---|---|
+| `r` | Refresh now |
+| `]` | Page forward |
+| `[` | Page backward |
+| `g` | Prompt for a new expression |
+| `q` | Close |
+
+Suggested global mappings (already included in the lazy.nvim spec above) fit
+alongside typical nvim-dap `<leader>d` mappings:
+
+```lua
+vim.keymap.set('n', '<leader>dm', function()
+  require('dap-memview').open(vim.fn.expand '<cexpr>')
+end, { desc = 'Debug: Memory view (expression under cursor)' })
+
+vim.keymap.set('n', '<leader>dM', function()
+  vim.ui.input({ prompt = 'Memory expression: ' }, function(input)
+    if input and input ~= '' then
+      require('dap-memview').open(input)
+    end
+  end)
+end, { desc = 'Debug: Memory view (prompt)' })
+```
+
+## Configuration
+
+Defaults shown — pass any subset to `setup()` (or `opts` with lazy.nvim):
+
+```lua
+require('dap-memview').setup {
+  bytes_per_line = 16,   -- bytes rendered per row
+  count = 256,           -- bytes fetched per view/page
+  auto_refresh = true,   -- re-read + diff-highlight on every stop
+  window = {
+    position = 'botright', -- any :split modifier ('topleft', 'vertical botright', ...)
+    height = 18,
+  },
+  keymaps = {            -- buffer-local, set to false to disable one
+    refresh = 'r',
+    close = 'q',
+    page_next = ']',
+    page_prev = '[',
+    goto_expr = 'g',
+  },
+}
+```
+
+### Highlight groups
+
+| Group | Default link | Purpose |
+|---|---|---|
+| `DapMemviewChanged` | `DiffText` | Bytes that changed since the previous stop |
+| `DapMemviewAddr` | `LineNr` | Address gutter |
+| `DapMemviewHeader` | `Title` | Header line |
+
+## How it works
+
+On open, the expression is resolved to an address with the DAP `evaluate`
+request; the view then issues `readMemory` for the visible window and decodes
+the result. An `event_stopped` listener re-reads the same window on every stop
+and diffs the snapshot against the previous one to produce the changed-byte
+highlights. No adapter-specific protocol is used — but the resolver tries a
+chain of expression spellings because adapters differ in what `evaluate`
+returns:
+
+1. the expression as given (adapters that populate `memoryReference`)
+2. `&(expr)` — for arrays and plain variables
+3. `(unsigned long long)&(expr)` — build the address from an integer cast
+4. the same cast behind codelldb's `/nat` native-evaluator prefix
+
+## Troubleshooting
+
+- **"no memory reference for ..."** — the expression may not exist in the
+  current frame (check spelling and scope), or the session isn't stopped.
+  The error lists every spelling that was tried.
+- **codelldb specifics**: codelldb does not return `memoryReference` from
+  `evaluate`, and its default *simple* expression evaluator cannot parse C
+  casts or `&`. The resolver's `/nat` fallback (step 4 above) handles this
+  automatically. If you use expressions in the view, plain variable names and
+  C expressions both work; codelldb-native syntax is fine too.
+- **"adapter does not support readMemory"** — your adapter doesn't implement
+  the request (see the table under Requirements). `:checkhealth dap-memview`
+  shows what the active session advertises.
+- **Huge addresses** — addresses above 2^53 lose precision in Lua doubles.
+  Not an issue for typical userspace debugging.
+
+## Roadmap
 
 - [ ] Byte editing via `writeMemory`
+- [ ] Resolve plain variable names through DAP `scopes`/`variables` (drops the
+      codelldb `/nat` special case)
 - [ ] Typed views (u8/u32/f64, endianness toggle)
 - [ ] Follow-pointer navigation
 - [ ] Multiple simultaneous views / multi-session support
 - [ ] Optional [nvim-dap-view](https://github.com/igorlfs/nvim-dap-view) section integration
 - [ ] Virtual scrolling for large regions
 
-Known limitation: addresses above 2^53 lose precision in Lua doubles (not an
-issue for typical userspace debugging).
+## Development
 
-## Tests
+Unit tests ([plenary.nvim](https://github.com/nvim-lua/plenary.nvim)):
 
 ```sh
 nvim --headless -u tests/minimal_init.lua \
   -c "PlenaryBustedDirectory tests/ {minimal_init='tests/minimal_init.lua'}"
 ```
 
+Integration test (drives a real codelldb session against `examples/demo`):
+
+```sh
+cd examples && clang -g -O0 -o demo demo.c && cd ..
+nvim --headless -n -u NONE -c "luafile tests/repro_evaluate.lua"
+```
+
+Issues and PRs welcome — especially reports of how other adapters
+(lldb-dap, cppdbg, gdb, delve...) behave with the resolver chain.
+
+## Related projects
+
+- [nvim-dap-ui](https://github.com/rcarriga/nvim-dap-ui) — multi-panel debug UI (variables, watches, stacks, REPL)
+- [nvim-dap-view](https://github.com/igorlfs/nvim-dap-view) — single-window debug UI
+- [nvim-dap-disasm](https://codeberg.org/Jorenar/nvim-dap-disasm) — disassembly view, the memory view's sibling
+- [nvim-dap discussion #701](https://github.com/mfussenegger/nvim-dap/discussions/701) — the memory-view UX thread that motivated this plugin
+
 ## License
 
-MIT
+[MIT](LICENSE)
