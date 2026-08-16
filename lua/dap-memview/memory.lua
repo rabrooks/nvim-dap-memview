@@ -34,6 +34,16 @@ local function extract_ref(resp, mode)
     return resp.memoryReference
   end
   local result = type(resp.result) == 'string' and resp.result or ''
+  if mode == 'ref' then
+    -- Match only the bare hex address and
+    -- prevent matching the address inside the bar key when LLDB
+    -- resolves the structure as {foo: 1, bar: 0x..., ...}.
+    local bare_hex = result:match '^%s*0x%x+%s*$'
+    if bare_hex then
+      return bare_hex
+    end
+    return nil
+  end
   local hex = result:match '0x%x+'
   if hex then
     return hex
