@@ -43,6 +43,41 @@ function M.format(bytes, base_addr, bytes_per_line)
   return lines
 end
 
+--- Inverse of byte_col: which byte (1-based) a 0-indexed screen column falls
+--- on. Columns left of the hex area clamp to 1; columns in the ASCII bar map
+--- to the character's byte; anything past the end clamps to the last byte.
+function M.col_to_byte(col, bytes_per_line)
+  bytes_per_line = bytes_per_line or 16
+  local pipe_col = M.byte_col(bytes_per_line, bytes_per_line) + 2 + 2 -- the '|' before the ASCII chars
+  if col >= pipe_col then
+    return math.max(1, math.min(col - pipe_col, bytes_per_line))
+  end
+  local j = 1
+  for k = 1, bytes_per_line do
+    if col >= M.byte_col(k, bytes_per_line) then
+      j = k
+    end
+  end
+  return j
+end
+
+--- The 8 bytes at 1-based index i, read as a little-endian pointer and
+--- returned as a `0x...` string (lowercase, no leading zeros; null is `0x0`).
+--- Returns nil when fewer than 8 bytes remain. Built digit-by-digit rather
+--- than through a Lua number, so tagged and high-half pointers above 2^53
+--- survive intact.
+function M.read_ptr_le(bytes, i)
+  if i < 1 or i + 7 > #bytes then
+    return nil
+  end
+  local digits = {}
+  for k = 7, 0, -1 do
+    digits[#digits + 1] = ('%02x'):format(bytes:byte(i + k))
+  end
+  local hex = table.concat(digits):gsub('^0+', '')
+  return '0x' .. (hex == '' and '0' or hex)
+end
+
 --- Byte indices (1-based) that differ between two snapshots.
 --- Compares up to #new; a missing/short old snapshot produces no marks.
 function M.diff(old, new)

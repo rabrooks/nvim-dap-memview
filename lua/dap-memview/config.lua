@@ -14,6 +14,8 @@ M.defaults = {
     page_next = ']',
     page_prev = '[',
     goto_expr = 'g', -- prompt for a new expression
+    follow = '<CR>', -- treat the 8 bytes at the cursor as a pointer and jump to it
+    back = '<BS>', -- return to the location before the last follow/goto
   },
 }
 
