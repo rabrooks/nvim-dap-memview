@@ -24,11 +24,13 @@ COMMANDS                                               *dap-memview-commands*
 ==============================================================================
 MAPPINGS (buffer-local)                                *dap-memview-mappings*
 
-    r    refresh
-    ]    page forward
-    [    page backward
-    g    prompt for a new expression
-    q    close
+    r      refresh
+    ]      page forward
+    [      page backward
+    <CR>   follow the pointer under the cursor (8 bytes, little-endian)
+    <BS>   back to the location before the last follow/goto
+    g      prompt for a new expression
+    q      close
 
 ==============================================================================
 SETUP                                                     *dap-memview-setup*
@@ -39,6 +41,15 @@ SETUP                                                     *dap-memview-setup*
       count = 256,
       auto_refresh = true,
       window = { position = 'botright', height = 18 },
+      keymaps = {            -- buffer-local; set one to false to disable it
+        refresh = 'r',
+        close = 'q',
+        page_next = ']',
+        page_prev = '[',
+        goto_expr = 'g',
+        follow = '<CR>',
+        back = '<BS>',
+      },
     }
 <
 

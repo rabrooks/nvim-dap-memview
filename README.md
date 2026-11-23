@@ -1,5 +1,7 @@
 # nvim-dap-memview
 
+[![CI](https://github.com/rabrooks/nvim-dap-memview/actions/workflows/ci.yml/badge.svg)](https://github.com/rabrooks/nvim-dap-memview/actions/workflows/ci.yml)
+
 A memory viewer for [nvim-dap](https://github.com/mfussenegger/nvim-dap) — the
 missing "memory panel" from full debugger UIs, as a live hex dump inside Neovim.
 
@@ -23,6 +25,9 @@ your program writes light up.
   arrays, pointers, arbitrary expressions, or raw `0x...` addresses
 - **Auto-refresh on every stop** (step, breakpoint) with **changed-byte
   highlighting** — see exactly what the last step mutated
+- **Follow-pointer navigation**: `<CR>` on 8 bytes jumps through them as a
+  pointer — chase linked lists, vtables, and heap structures; `<BS>` walks
+  back up the trail
 - **Paging** forward/backward through memory from the anchor address
 - **Adapter-agnostic**: speaks only DAP (`evaluate` + `readMemory`), with a
   resolver that handles adapters that don't populate `memoryReference`
@@ -147,13 +152,16 @@ nvim demo.c
 
 Set a breakpoint inside the loop, launch a codelldb session on `./demo`, then
 `:DapMemView buf` and step — the letters the loop writes march across the
-ASCII column with each byte highlighted as it changes.
+ASCII column with each byte highlighted as it changes. Then try
+`:DapMemView rec`: a struct with a pointer in it. Put the cursor on the
+pointer's 8 bytes (the second half of the first row) and press `<CR>` to
+follow it, `<BS>` to come back.
 
 ## Commands
 
 | Command | Action |
 |---|---|
-| `:DapMemView {expr}` | Open the memory view for an expression: a variable (`buf`), address-of (`&i`), pointer (`argv`), or raw address (`0x7ffee4c0`) |
+| `:DapMemView {expr}` | Open the memory view for an expression: a variable (`buf`, a struct, ...) shows the variable's own bytes, a pointer (`argv`) shows what it points at, and `&ptr` shows the pointer itself. A raw address (`0x7ffee4c0`) works too |
 | `:DapMemView` | Same, using the expression under the cursor (`<cexpr>`) |
 | `:DapMemViewClose` | Close the memory view window |
 
@@ -166,6 +174,8 @@ Inside the memory view (buffer-local, configurable):
 | `r` | Refresh now |
 | `]` | Page forward |
 | `[` | Page backward |
+| `<CR>` | Follow the pointer under the cursor (8 bytes, little-endian) |
+| `<BS>` | Back to the location before the last follow/goto |
 | `g` | Prompt for a new expression |
 | `q` | Close |
 
@@ -205,6 +215,8 @@ require('dap-memview').setup {
     page_next = ']',
     page_prev = '[',
     goto_expr = 'g',
+    follow = '<CR>',
+    back = '<BS>',
   },
 }
 ```
@@ -227,10 +239,17 @@ highlights. No adapter-specific protocol is used — but the resolver tries a
 chain of expression spellings because adapters differ in what `evaluate`
 returns:
 
-1. the expression as given (adapters that populate `memoryReference`)
-2. `&(expr)` — for arrays and plain variables
-3. `(unsigned long long)&(expr)` — build the address from an integer cast
-4. the same cast behind codelldb's `/nat` native-evaluator prefix
+1. the expression as given — adapters that populate `memoryReference`, or
+   render a pointer as a bare `0x...` address, are done here
+2. otherwise, for a pointer (the response's `type` ends in `*`): its value,
+   `(unsigned long long)(expr)`, so the view shows what it points at
+3. for anything else: `&(expr)`, then `(unsigned long long)&(expr)` — the
+   variable's own address, built from an integer cast
+4. each cast again behind codelldb's `/nat` native-evaluator prefix
+
+An address that merely appears *inside* a value summary — codelldb renders a
+struct as `{id:42, id_ptr:0x16fdfe1e4}` — is never used: that is a member's
+value, not where the struct lives.
 
 ## Troubleshooting
 
@@ -245,23 +264,29 @@ returns:
 - **"adapter does not support readMemory"** — your adapter doesn't implement
   the request (see the table under Requirements). `:checkhealth dap-memview`
   shows what the active session advertises.
-- **Huge addresses** — addresses above 2^53 lose precision in Lua doubles.
-  Not an issue for typical userspace debugging.
+- **A failed follow or page leaves the view where it was** — following a
+  garbage pointer or paging into unmapped memory reports the adapter's error
+  and keeps the current bytes on screen.
+- **Huge addresses** — pointers are followed exactly, but the address gutter
+  and expression resolution go through Lua doubles and lose precision above
+  2^53. Not an issue for typical userspace debugging.
 
 ## Roadmap
 
+- [x] Follow-pointer navigation
 - [ ] Byte editing via `writeMemory`
 - [ ] Resolve plain variable names through DAP `scopes`/`variables` (drops the
       codelldb `/nat` special case)
 - [ ] Typed views (u8/u32/f64, endianness toggle)
-- [ ] Follow-pointer navigation
 - [ ] Multiple simultaneous views / multi-session support
 - [ ] Optional [nvim-dap-view](https://github.com/igorlfs/nvim-dap-view) section integration
 - [ ] Virtual scrolling for large regions
 
 ## Development
 
-Unit tests ([plenary.nvim](https://github.com/nvim-lua/plenary.nvim)):
+Unit tests ([plenary.nvim](https://github.com/nvim-lua/plenary.nvim)) — these
+run in CI on Neovim 0.10, stable, and nightly, and need no debug adapter (the
+resolver and view are driven by a fake DAP session, `tests/fake_dap.lua`):
 
 ```sh
 nvim --headless -u tests/minimal_init.lua \

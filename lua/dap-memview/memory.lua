@@ -23,9 +23,15 @@ local function err_msg(e)
 end
 
 --- Pull a usable memory reference out of an evaluate response.
---- mode 'ref':  memoryReference field, or a 0x... substring in the result.
+--- mode 'ref':  memoryReference field, or a result that *starts with* a 0x...
+---              address (a pointer value, optionally followed by a summary
+---              such as `0x16fdfe3f8 "text"`).
 --- mode 'int':  additionally accept a plain decimal result (from our
 ---              integer-cast candidates) and format it as a hex address.
+---
+--- The hex match is anchored on purpose: adapters render aggregates as
+--- summaries like `{id: 1, idPtr: 0x7ff6a0d27040}`, and a 0x... buried in one
+--- is a member's value, not the address of the expression (issue #1).
 local function extract_ref(resp, mode)
   if not resp then
     return nil
@@ -34,7 +40,7 @@ local function extract_ref(resp, mode)
     return resp.memoryReference
   end
   local result = type(resp.result) == 'string' and resp.result or ''
-  local hex = result:match '0x%x+'
+  local hex = result:match '^%s*(0x%x+)'
   if hex then
     return hex
   end
@@ -63,36 +69,47 @@ local function try_resolve(cand, cb)
     end
     local ref = extract_ref(resp, cand.mode)
     if not ref then
-      return cb(('no memory reference for "%s"'):format(cand.expr))
+      return cb(('no memory reference for "%s"'):format(cand.expr), nil, resp)
     end
     cb(nil, ref)
   end)
 end
 
---- Candidate spellings of an expression, tried in order until one yields an
---- address. Motivation (verified against codelldb 1.11 / lldb-dap):
----   1. as given — adapters that set memoryReference on evaluate (lldb-dap,
----      cppdbg, gdb -i dap) succeed here for pointers.
----   2. address-of — same adapters, for arrays/plain variables.
----   3. integer cast — codelldb sets NO memoryReference on evaluate at all
----      and renders pointers as value summaries, so we cast the address to an
----      integer and build the reference ourselves (readMemory accepts 0x
----      strings).
----   4. same cast via codelldb's `/nat ` native-evaluator prefix — codelldb's
----      default "simple" evaluator cannot parse C casts or `&`. Harmless
----      no-op failure on other adapters.
-local function candidates(expr)
-  local addr_of = expr:match '^&' and ('(%s)'):format(expr) or ('&(%s)'):format(expr)
-  local list = { { expr = expr, mode = 'ref' } }
-  if not expr:match '^&' then
-    list[#list + 1] = { expr = addr_of, mode = 'ref' }
+--- Does an evaluate response describe a pointer? (`int *`, `char *const`, ...)
+local function is_pointer(resp)
+  return type(resp) == 'table' and type(resp.type) == 'string' and resp.type:match '%*[%s%a]*$' ~= nil
+end
+
+--- Fallback spellings, tried in order when evaluating the expression as given
+--- yields no address (verified against codelldb 1.11, which sets NO
+--- memoryReference on evaluate and renders values as summaries):
+---   pointers (the response's `type` ends in `*`): the view should show what
+---   the pointer points at, so cast its *value* to an integer and build the
+---   reference ourselves (readMemory accepts 0x strings).
+---   everything else: the view should show the variable itself, so try
+---   address-of (adapters that set memoryReference on `&x`), then cast the
+---   address to an integer.
+--- Each cast is tried twice, the second time behind codelldb's `/nat `
+--- native-evaluator prefix — its default "simple" evaluator cannot parse C
+--- casts or `&`. Harmless no-op failure on other adapters.
+local function fallbacks(expr, pointer)
+  local list = {}
+  local target
+  if pointer then
+    target = ('(%s)'):format(expr)
+  elseif expr:match '^&' then
+    target = ('(%s)'):format(expr)
+  else
+    target = ('&(%s)'):format(expr)
+    list[#list + 1] = { expr = target, mode = 'ref' }
   end
-  list[#list + 1] = { expr = ('(unsigned long long)%s'):format(addr_of), mode = 'int' }
-  list[#list + 1] = { expr = ('/nat (unsigned long long)%s'):format(addr_of), mode = 'int' }
+  list[#list + 1] = { expr = ('(unsigned long long)%s'):format(target), mode = 'int' }
+  list[#list + 1] = { expr = ('/nat (unsigned long long)%s'):format(target), mode = 'int' }
   return list
 end
 
---- Resolve an expression to a DAP memoryReference.
+--- Resolve an expression to a DAP memoryReference: a pointer resolves to what
+--- it points at, anything else to its own address.
 --- @param expr string e.g. "buf", "&buf", "argv", "0x7ffee4c0"
 --- @param cb fun(err: string|nil, memref: string|nil)
 function M.resolve(expr, cb)
@@ -100,25 +117,30 @@ function M.resolve(expr, cb)
   if expr:match '^0x%x+$' then
     return cb(nil, expr)
   end
-  local list = candidates(expr)
-  local first_err
-  local function attempt(i)
-    if i > #list then
-      local tried = {}
-      for _, c in ipairs(list) do
-        tried[#tried + 1] = c.expr
-      end
-      return cb(('%s (tried: %s)'):format(first_err or 'could not resolve', table.concat(tried, ', ')))
+  -- As given first: adapters that set memoryReference (lldb-dap, cppdbg,
+  -- gdb -i dap) or render pointers as a bare address succeed here.
+  try_resolve({ expr = expr, mode = 'ref' }, function(err, ref, resp)
+    if ref then
+      return cb(nil, ref)
     end
-    try_resolve(list[i], function(err, ref)
-      if ref then
-        return cb(nil, ref)
+    local list = fallbacks(expr, is_pointer(resp))
+    local function attempt(i)
+      if i > #list then
+        local tried = { expr }
+        for _, c in ipairs(list) do
+          tried[#tried + 1] = c.expr
+        end
+        return cb(('%s (tried: %s)'):format(err or 'could not resolve', table.concat(tried, ', ')))
       end
-      first_err = first_err or err
-      attempt(i + 1)
-    end)
-  end
-  attempt(1)
+      try_resolve(list[i], function(_, r)
+        if r then
+          return cb(nil, r)
+        end
+        attempt(i + 1)
+      end)
+    end
+    attempt(1)
+  end)
 end
 
 --- Read memory at a memoryReference.
@@ -142,11 +164,16 @@ function M.read(memref, offset, count, cb)
     if e then
       return cb(('readMemory: %s'):format(err_msg(e)))
     end
-    if not (resp and resp.data) then
-      return cb 'memory unreadable at this address'
+    if not (resp and resp.data) or resp.data == '' then
+      return cb(('memory unreadable at %s%+d'):format(memref, offset))
     end
     cb(nil, vim.base64.decode(resp.data), resp.address)
   end)
 end
+
+-- Exposed for unit tests only.
+M._extract_ref = extract_ref
+M._fallbacks = fallbacks
+M._is_pointer = is_pointer
 
 return M
